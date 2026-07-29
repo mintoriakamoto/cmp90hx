@@ -1,29 +1,42 @@
 #!/usr/bin/env bash
+# Verify the completed persistent-service handoff without making RM private
+# queries. Nine-rate inspection is intentionally left to standalone check.sh.
 set -Eeuo pipefail
-readonly install_dir="/lib/modules/$(uname -r)/updates/cmp90hx-persistent"
-readonly root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly rm_query="${root_dir}/scripts/rm_issue_rate_query.py"
+
+readonly batch_status='/run/cmp90hx-persistent-batch.status'
+declare -a bdfs=()
+
 [[ "${EUID}" -eq 0 ]] || { echo 'Run as root.' >&2; exit 1; }
-[[ -s "${install_dir}/gpu_inventory" ]] || { echo 'No installed inventory for this kernel.' >&2; exit 1; }
-[[ -f "${install_dir}/nvidia.ko.bootstrap" ]] || { echo 'Missing boot-stage module.' >&2; exit 1; }
-count=0
-while IFS= read -r bdf; do
-    [[ -n "${bdf}" ]] || continue
-    nvidia-smi --query-gpu=pci.bus_id --format=csv,noheader | tr '[:upper:]' '[:lower:]' | sed 's/^00000000:/0000:/' | grep -qx "${bdf}" || {
-        echo "GPU missing from nvidia-smi: ${bdf}" >&2; exit 1; }
-    count=$((count + 1))
-done < "${install_dir}/gpu_inventory"
-systemctl is-active --quiet cmp90hx-persistent.service || { echo 'Boot handoff service is not active.' >&2; exit 1; }
-while IFS= read -r bdf; do
-    [[ -n "${bdf}" ]] || continue
-    row="$(nvidia-smi --query-gpu=pci.bus_id,uuid,driver_version,memory.total --format=csv,noheader,nounits | \
-        awk -F, -v want="${bdf}" '{ x=tolower($1); sub(/^00000000:/, "0000:", x); if (x == want) print; }')"
-    [[ -n "${row}" ]] || { echo "GPU absent from RM query: ${bdf}" >&2; exit 1; }
-    IFS=',' read -r _ uuid driver memory <<< "${row}"
-    uuid="$(xargs <<< "${uuid}")"
-    driver="$(xargs <<< "${driver}")"
-    memory="$(xargs <<< "${memory}")"
-    python3 "${rm_query}" --bdf "${bdf}" --uuid "${uuid}" --driver "${driver}" \
-        --memory-mib "${memory}" --expect full >/dev/null
-done < "${install_dir}/gpu_inventory"
-printf 'PASS_CMP90HX_PERSISTENT_COMPUTE_UNLOCK (%s GPU(s))\n' "${count}"
+
+mapfile -t bdfs < <(
+    for path in /sys/bus/pci/devices/*; do
+        [[ -r "${path}/vendor" && -r "${path}/device" &&
+           -r "${path}/subsystem_vendor" && -r "${path}/subsystem_device" ]] || continue
+        [[ "$(<"${path}/vendor")" == 0x10de &&
+           "$(<"${path}/device")" == 0x220d &&
+           "$(<"${path}/subsystem_vendor")" == 0x10de &&
+           "$(<"${path}/subsystem_device")" == 0x1555 ]] || continue
+        basename "${path}"
+    done | sort -V
+)
+(( ${#bdfs[@]} > 0 )) || { echo 'No supported CMP90HX GPUs found.' >&2; exit 1; }
+systemctl is-active --quiet cmp90hx-persistent.service || {
+    echo 'CMP90HX persistent service is not active/exited.' >&2
+    exit 1
+}
+[[ -r "${batch_status}" ]] || { echo "Missing batch status: ${batch_status}" >&2; exit 1; }
+grep -Fq "PASS all ${#bdfs[@]} CMP90HX GPUs completed" "${batch_status}" || {
+    echo 'The batch status does not contain a complete success marker.' >&2
+    exit 1
+}
+
+inventory="$(timeout 30 nvidia-smi --query-gpu=pci.bus_id --format=csv,noheader)"
+for bdf in "${bdfs[@]}"; do
+    grep -Fqx "00000000:${bdf#0000:}" <<<"${inventory}" ||
+        grep -Fqx "${bdf}" <<<"${inventory}" || {
+            echo "GPU missing from nvidia-smi: ${bdf}" >&2
+            exit 1
+        }
+done
+
+printf 'PASS_CMP90HX_PERSISTENT_SERVICE (%s GPU(s))\n' "${#bdfs[@]}"

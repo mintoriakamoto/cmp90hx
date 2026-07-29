@@ -1,0 +1,11 @@
+.DS_Store
+work/cmp90hx-build-*/
+work/open-gpu-kernel-modules-*/
+work/cmp90hx-persistent-build/
+*.ko
+*.o
+*.cmd
+Module.symvers
+modules.order
+__pycache__/
+*.pyc

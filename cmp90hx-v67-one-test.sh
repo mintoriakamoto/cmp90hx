@@ -109,8 +109,8 @@ wait_all_cmp90_gpus() {
         if output="$(timeout 15 nvidia-smi --query-gpu=pci.bus_id --format=csv,noheader 2>/dev/null)"; then
             all_online=1
             for bdf in "${bdfs[@]}"; do
-                if ! grep -Fqx "00000000:${bdf#0000:}" <<<"${output}" &&
-                   ! grep -Fqx "${bdf}" <<<"${output}"; then
+                if ! grep -Fqxi "00000000:${bdf#0000:}" <<<"${output}" &&
+                   ! grep -Fqxi "${bdf}" <<<"${output}"; then
                     all_online=0
                     break
                 fi

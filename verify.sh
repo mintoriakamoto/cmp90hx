@@ -32,8 +32,8 @@ grep -Fq "PASS all ${#bdfs[@]} CMP90HX GPUs completed" "${batch_status}" || {
 
 inventory="$(timeout 30 nvidia-smi --query-gpu=pci.bus_id --format=csv,noheader)"
 for bdf in "${bdfs[@]}"; do
-    grep -Fqx "00000000:${bdf#0000:}" <<<"${inventory}" ||
-        grep -Fqx "${bdf}" <<<"${inventory}" || {
+    grep -Fqxi "00000000:${bdf#0000:}" <<<"${inventory}" ||
+        grep -Fqxi "${bdf}" <<<"${inventory}" || {
             echo "GPU missing from nvidia-smi: ${bdf}" >&2
             exit 1
         }
